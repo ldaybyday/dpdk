@@ -1,0 +1,46 @@
+
+	rte_atomic32_test_and_set;
+
+	rte_eal_log_early_init;
+
+	eal_log_level_parse;
+
+	rte_set_log_level;
+
+	rte_eal_cpu_init();
+
+	eal_hugepage_info_init();
+
+	eal_get_hugepage_mem_size();
+
+	rte_srand;
+
+	rte_config_init;
+
+	rte_eal_pci_init;
+	
+	rte_eal_memory_init;
+	
+	eal_hugedirs_unlock;
+
+	rte_eal_memzone_init;
+
+	rte_eal_tailqs_init;
+
+	rte_eal_log_init;
+
+	rte_eal_alarm_init;
+
+	rte_eal_timer_init;
+
+	eal_check_mem_on_local_socket;
+
+	eal_plugins_init;
+
+	rte_eal_dev_init;
+
+	rte_eal_intr_init;
+
+	rte_eal_pci_probe;
+	
+	rte_eal_mcfg_complete;
