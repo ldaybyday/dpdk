@@ -91,11 +91,11 @@ static inline void __free_fragments(struct rte_mbuf *mb[], uint32_t num)
  *   Otherwise - (-1) * <errno>.
  */
 int32_t
-rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,
-	struct rte_mbuf **pkts_out,
-	uint16_t nb_pkts_out,
-	uint16_t mtu_size,
-	struct rte_mempool *pool_direct,
+rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,  //分片的结构
+	struct rte_mbuf **pkts_out,  //保存分片后mbuf的缓冲区
+	uint16_t nb_pkts_out, //缓冲区剩余空间个数
+	uint16_t mtu_size, //mtu的大小
+	struct rte_mempool *pool_direct, 
 	struct rte_mempool *pool_indirect)
 {
 	struct rte_mbuf *in_seg = NULL;
@@ -104,19 +104,21 @@ rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,
 	uint32_t more_in_segs;
 	uint16_t fragment_offset, flag_offset, frag_size;
 
+	//达到mtu除去IPv4头还能保存的数据长度大小
 	frag_size = (uint16_t)(mtu_size - sizeof(struct ipv4_hdr));
 
-	/* Fragment size should be a multiply of 8. */
+	//分片的大小必须为8的整数倍
 	IP_FRAG_ASSERT((frag_size & IPV4_HDR_FO_MASK) == 0);
 
+	//获取IP头部的16位的标识字段
 	in_hdr = rte_pktmbuf_mtod(pkt_in, struct ipv4_hdr *);
 	flag_offset = rte_cpu_to_be_16(in_hdr->fragment_offset);
 
-	/* If Don't Fragment flag is set */
+	//标识字段的DF位是否0，如果为1,标识不能进行分片
 	if (unlikely ((flag_offset & IPV4_HDR_DF_MASK) != 0))
 		return -ENOTSUP;
 
-	/* Check that pkts_out is big enough to hold all fragments */
+	//检查缓冲区的空间是否能够保存所有的分片后的数据。
 	if (unlikely(frag_size * nb_pkts_out <
 	    (uint16_t)(pkt_in->pkt_len - sizeof (struct ipv4_hdr))))
 		return -EINVAL;
@@ -133,6 +135,7 @@ rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,
 		struct ipv4_hdr *out_hdr;
 
 		/* Allocate direct buffer */
+		//分配一个直接的mbuf，也就是mbuf链的第一个.除了最后一个mbuf链外，其他的mbuf链为一个完整的分片数据（即为8的整数倍）
 		out_pkt = rte_pktmbuf_alloc(pool_direct);
 		if (unlikely(out_pkt == NULL)) {
 			__free_fragments(pkts_out, out_pkt_pos);
@@ -140,6 +143,7 @@ rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,
 		}
 
 		/* Reserve space for the IP header that will be built later */
+		//直接mbuf只用于保存IPv4头部
 		out_pkt->data_len = sizeof(struct ipv4_hdr);
 		out_pkt->pkt_len = sizeof(struct ipv4_hdr);
 
@@ -150,38 +154,41 @@ rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,
 			uint32_t len;
 
 			/* Allocate indirect buffer */
+			//分配一个间接mbuf结构，用于保存除了IPV4头部的剩余分片数据
 			out_seg = rte_pktmbuf_alloc(pool_indirect);
 			if (unlikely(out_seg == NULL)) {
 				rte_pktmbuf_free(out_pkt);
 				__free_fragments(pkts_out, out_pkt_pos);
 				return -ENOMEM;
 			}
+			//将次间接mbuf分片加入链表中
 			out_seg_prev->next = out_seg;
 			out_seg_prev = out_seg;
 
 			/* Prepare indirect buffer */
+			//将用于分片的mbuf attach到间接分片mbuf上
 			rte_pktmbuf_attach(out_seg, in_seg);
-			len = mtu_size - out_pkt->pkt_len;
+			len = mtu_size - out_pkt->pkt_len;//剩余能够保存的数据长度
 			if (len > (in_seg->data_len - in_seg_data_pos)) {
 				len = in_seg->data_len - in_seg_data_pos;
 			}
-			out_seg->data_off = in_seg->data_off + in_seg_data_pos;
-			out_seg->data_len = (uint16_t)len;
+			out_seg->data_off = in_seg->data_off + in_seg_data_pos;//此分片数据的起始偏移
+			out_seg->data_len = (uint16_t)len;//此分片mbuf保存的数据数据长度
 			out_pkt->pkt_len = (uint16_t)(len +
-			    out_pkt->pkt_len);
-			out_pkt->nb_segs += 1;
-			in_seg_data_pos += len;
+			    out_pkt->pkt_len);//整个数据链的数据长度和
+			out_pkt->nb_segs += 1;//分片个数+1
+			in_seg_data_pos += len;//下一个数据偏移
 
 			/* Current output packet (i.e. fragment) done ? */
-			if (unlikely(out_pkt->pkt_len >= mtu_size))
+			if (unlikely(out_pkt->pkt_len >= mtu_size))//如果此直接mbuf的数据总长度够了一个MTU长度，那么会申请一个新的直接mbuf保存剩余的数据。
 				more_out_segs = 0;
 
 			/* Current input segment done ? */
-			if (unlikely(in_seg_data_pos == in_seg->data_len)) {
+			if (unlikely(in_seg_data_pos == in_seg->data_len)) {//如果用于分片的mbuf链的当前mbuf封装玩，那么进行此链的下一个mbuf。
 				in_seg = in_seg->next;
 				in_seg_data_pos = 0;
 
-				if (unlikely(in_seg == NULL))
+				if (unlikely(in_seg == NULL))//如果mbuf链的所有mbuf都完成分片，那么将more_in_segs设置为0，也就是结束分片标记设置为0
 					more_in_segs = 0;
 			}
 		}
@@ -190,10 +197,12 @@ rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,
 
 		out_hdr = rte_pktmbuf_mtod(out_pkt, struct ipv4_hdr *);
 
+		//分装修改IPv4头部数据，包括片偏移，总长度，检验和封装为0
 		__fill_ipv4hdr_frag(out_hdr, in_hdr,
 		    (uint16_t)out_pkt->pkt_len,
 		    flag_offset, fragment_offset, more_in_segs);
 
+		//求此片的偏移字段的值，第一个分片此值为0
 		fragment_offset = (uint16_t)(fragment_offset +
 		    out_pkt->pkt_len - sizeof(struct ipv4_hdr));
 
