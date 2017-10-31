@@ -127,8 +127,8 @@ rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 	uint16_t flag_offset, ip_ofs, ip_flag;
 
 	flag_offset = rte_be_to_cpu_16(ip_hdr->fragment_offset);
-	ip_ofs = (uint16_t)(flag_offset & IPV4_HDR_OFFSET_MASK);
-	ip_flag = (uint16_t)(flag_offset & IPV4_HDR_MF_FLAG);
+	ip_ofs = (uint16_t)(flag_offset & IPV4_HDR_OFFSET_MASK);//偏移
+	ip_flag = (uint16_t)(flag_offset & IPV4_HDR_MF_FLAG);//MF字段
 
 	psd = (unaligned_uint64_t *)&ip_hdr->src_addr;
 	/* use first 8 bytes only */
@@ -136,9 +136,9 @@ rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 	key.id = ip_hdr->packet_id;
 	key.key_len = IPV4_KEYLEN;
 
-	ip_ofs *= IPV4_HDR_OFFSET_UNITS;
+	ip_ofs *= IPV4_HDR_OFFSET_UNITS; //剩以8表示真实偏移
 	ip_len = (uint16_t)(rte_be_to_cpu_16(ip_hdr->total_length) -
-		mb->l3_len);
+		mb->l3_len);//IP负载的大小
 
 	IP_FRAG_LOG(DEBUG, "%s:%d:\n"
 		"mbuf: %p, tms: %" PRIu64
@@ -150,7 +150,7 @@ rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 		tbl, tbl->max_cycles, tbl->entry_mask, tbl->max_entries,
 		tbl->use_entries);
 
-	/* try to find/add entry into the fragment's table. */
+	//通过Cuckoo hash算法得到分片的ip_frag_pkt结构体，或者得到一个空的结构体
 	if ((fp = ip_frag_find(tbl, dr, &key, tms)) == NULL) {
 		IP_FRAG_MBUF2DR(dr, mb);
 		return NULL;
@@ -166,7 +166,7 @@ rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 		fp->total_size, fp->frag_size, fp->last_idx);
 
 
-	/* process the fragmented packet. */
+	//如果能够重组所有分配，那么重组如果不能，那么将新的分片存储到结构体中
 	mb = ip_frag_process(fp, dr, mb, ip_ofs, ip_len, ip_flag);
 	ip_frag_inuse(tbl, fp);
 

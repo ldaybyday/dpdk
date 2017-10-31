@@ -363,7 +363,7 @@ reassemble(struct rte_mbuf *m, uint8_t portid, uint32_t queue,
 
 		ip_hdr = (struct ipv4_hdr *)(eth_hdr + 1);
 
-		 /* if it is a fragmented packet, then try to reassemble. */
+		 //判断此报文是否是分片
 		if (rte_ipv4_frag_pkt_is_fragmented(ip_hdr)) {
 			struct rte_mbuf *mo;
 

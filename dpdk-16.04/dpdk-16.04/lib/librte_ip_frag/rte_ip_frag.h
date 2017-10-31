@@ -330,6 +330,9 @@ rte_ipv4_frag_pkt_is_fragmented(const struct ipv4_hdr * hdr) {
 	ip_ofs = (uint16_t)(flag_offset & IPV4_HDR_OFFSET_MASK);
 	ip_flag = (uint16_t)(flag_offset & IPV4_HDR_MF_FLAG);
 
+	//判断MF为1，不为0表示后面有分片，所以此报文是分片
+	//判断数据偏移字段是否为0，不为0，表示此为分片
+	//因此，如果MF字段为0，并且数据偏移字段为0，那么次不是一个分片报文
 	return ip_flag != 0 || ip_ofs  != 0;
 }
 

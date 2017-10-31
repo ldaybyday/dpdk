@@ -74,11 +74,13 @@ rte_ip_frag_table_create(uint32_t bucket_num, uint32_t bucket_entries,
 	size_t sz;
 	uint64_t nb_entries;
 
+	//计算条目个数
 	nb_entries = rte_align32pow2(bucket_num);
 	nb_entries *= bucket_entries;
 	nb_entries *= IP_FRAG_HASH_FNUM;
 
 	/* check input parameters. */
+	//检查输入参数：每个篮子的个数是否是2的幂；条目个数是否超出32位表示范围及是否为0，是否小于最大条目个数。
 	if (rte_is_power_of_2(bucket_entries) == 0 ||
 			nb_entries > UINT32_MAX || nb_entries == 0 ||
 			nb_entries < max_entries) {
@@ -86,6 +88,7 @@ rte_ip_frag_table_create(uint32_t bucket_num, uint32_t bucket_entries,
 		return NULL;
 	}
 
+	//计算分配空间大小，并调用函数rte_zmalloc_socket分配空间
 	sz = sizeof (*tbl) + nb_entries * sizeof (tbl->pkt[0]);
 	if ((tbl = rte_zmalloc_socket(__func__, sz, RTE_CACHE_LINE_SIZE,
 			socket_id)) == NULL) {
@@ -98,11 +101,11 @@ rte_ip_frag_table_create(uint32_t bucket_num, uint32_t bucket_entries,
 	RTE_LOG(INFO, USER1, "%s: allocated of %zu bytes at socket %d\n",
 		__func__, sz, socket_id);
 
-	tbl->max_cycles = max_cycles;
-	tbl->max_entries = max_entries;
-	tbl->nb_entries = (uint32_t)nb_entries;
-	tbl->nb_buckets = bucket_num;
-	tbl->bucket_entries = bucket_entries;
+	tbl->max_cycles = max_cycles;                      //老化时间
+	tbl->max_entries = max_entries;                    //最大条目个数
+	tbl->nb_entries = (uint32_t)nb_entries;            //分配的条目个数
+	tbl->nb_buckets = bucket_num;                      //篮子的个数
+	tbl->bucket_entries = bucket_entries;              //每个篮子的个数
 	tbl->entry_mask = (tbl->nb_entries - 1) & ~(tbl->bucket_entries  - 1);
 
 	TAILQ_INIT(&(tbl->lru));

@@ -136,26 +136,41 @@ ipv6_frag_hash(const struct ip_frag_key *key, uint32_t *v1, uint32_t *v2)
 	*v2 = (v << 7) + (v >> 14);
 }
 
+
+/*
+	函数通过判断：
+	1.如果此分片是第一个分片，有如下逻辑：
+		如果第一分片的位置即数组索引为1的位置已经有mbuf保存了，那么会释放此结构，并返回NULL；如果没有被占用，将分片保存到数组中。
+	2.如果此分片是最后一个分片，有如下逻辑：
+		如果最后一分片的位置即数组索引为0的位置已经有mbuf保存了，那么会释放此结构，并返回NULL；如果没有被占用，将分片保存到数组中。
+	3.如果此分片是中间分片，有入戏按逻辑：
+		将分片保存到数组相应索引中。
+	
+	判断是否接收完所有的分片，如果未接收完分片，返回NULL；如果接收完分片，进行重组。
+	如果重组后，返回的mbuf为NULL，那么释放所有的资源；如果返回的mbuf不为空，那么将此节点的key重置为未使用，并返回重组后的mbuf。
+	
+*/
 struct rte_mbuf *
 ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 	struct rte_mbuf *mb, uint16_t ofs, uint16_t len, uint16_t more_frags)
 {
 	uint32_t idx;
 
+	//计算所有已经到达分片的大小
 	fp->frag_size += len;
 
-	/* this is the first fragment. */
+	//是第一个分片
 	if (ofs == 0) {
 		idx = (fp->frags[IP_FIRST_FRAG_IDX].mb == NULL) ?
 				IP_FIRST_FRAG_IDX : UINT32_MAX;
 
-	/* this is the last fragment. */
+	//是最后一个分片
 	} else if (more_frags == 0) {
 		fp->total_size = ofs + len;
 		idx = (fp->frags[IP_LAST_FRAG_IDX].mb == NULL) ?
 				IP_LAST_FRAG_IDX : UINT32_MAX;
 
-	/* this is the intermediate fragment. */
+	//这是中间片段
 	} else if ((idx = fp->last_idx) <
 		sizeof (fp->frags) / sizeof (fp->frags[0])) {
 		fp->last_idx++;
@@ -165,6 +180,7 @@ ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 	 * errorneous packet: either exceeed max allowed number of fragments,
 	 * or duplicate first/last fragment encountered.
 	 */
+	 //错误：索引大于能够保存分片的缓存数组的大小
 	if (idx >= sizeof (fp->frags) / sizeof (fp->frags[0])) {
 
 		/* report an error. */
@@ -196,6 +212,7 @@ ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 				fp->frags[IP_LAST_FRAG_IDX].len);
 
 		/* free all fragments, invalidate the entry. */
+		//释放所有分片，并将无效话节点
 		ip_frag_free(fp, dr);
 		ip_frag_key_invalidate(&fp->key);
 		IP_FRAG_MBUF2DR(dr, mb);
@@ -203,17 +220,18 @@ ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 		return NULL;
 	}
 
+	//赋值
 	fp->frags[idx].ofs = ofs;
 	fp->frags[idx].len = len;
 	fp->frags[idx].mb = mb;
 
 	mb = NULL;
 
-	/* not all fragments are collected yet. */
+	//不是所有的分片都到达，返回NULL
 	if (likely (fp->frag_size < fp->total_size)) {
 		return mb;
 
-	/* if we collected all fragments, then try to reassemble. */
+	//所有分片都叨叨，进行重组
 	} else if (fp->frag_size == fp->total_size &&
 			fp->frags[IP_FIRST_FRAG_IDX].mb != NULL) {
 		if (fp->key.key_len == IPV4_KEYLEN)
@@ -222,7 +240,7 @@ ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 			mb = ipv6_frag_reassemble(fp);
 	}
 
-	/* errorenous set of fragments. */
+	//如果mb为NULL，那么是重组错误，那么充值结构体fp，并将所有分片加入到释放空间中。
 	if (mb == NULL) {
 
 		/* report an error. */
@@ -253,11 +271,11 @@ ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 				fp->frags[IP_LAST_FRAG_IDX].ofs,
 				fp->frags[IP_LAST_FRAG_IDX].len);
 
-		/* free associated resources. */
+		//释放资源
 		ip_frag_free(fp, dr);
 	}
 
-	/* we are done with that entry, invalidate it. */
+	//充值key为未使用
 	ip_frag_key_invalidate(&fp->key);
 	return mb;
 }
@@ -285,6 +303,7 @@ ip_frag_find(struct rte_ip_frag_tbl *tbl, struct rte_ip_frag_death_row *dr,
 
 	IP_FRAG_TBL_STAT_UPDATE(&tbl->stat, find_num, 1);
 
+	//通过key查找hash
 	if ((pkt = ip_frag_lookup(tbl, key, tms, &free, &stale)) == NULL) {
 
 		/*timed-out entry, free and invalidate it*/
@@ -346,6 +365,7 @@ ip_frag_lookup(struct rte_ip_frag_tbl *tbl,
 	max_cycles = tbl->max_cycles;
 	assoc = tbl->bucket_entries;
 
+	//如果有最后一个使用的元素，那么比较最后一个元素的key值是否相等。
 	if (tbl->last != NULL && ip_frag_key_cmp(key, &tbl->last->key) == 0)
 		return tbl->last;
 
@@ -378,11 +398,11 @@ ip_frag_lookup(struct rte_ip_frag_tbl *tbl,
 					p1, i, assoc,
 			IPv6_KEY_BYTES(p1[i].key.src_dst), p1[i].key.id, p1[i].start);
 
-		if (ip_frag_key_cmp(key, &p1[i].key) == 0)
+		if (ip_frag_key_cmp(key, &p1[i].key) == 0)//判断是否相等
 			return p1 + i;
-		else if (ip_frag_key_is_empty(&p1[i].key))
+		else if (ip_frag_key_is_empty(&p1[i].key))//判断是否为空
 			empty = (empty == NULL) ? (p1 + i) : empty;
-		else if (max_cycles + p1[i].start < tms)
+		else if (max_cycles + p1[i].start < tms)//判断是否超时
 			old = (old == NULL) ? (p1 + i) : old;
 
 		if (p2->key.key_len == IPV4_KEYLEN)
@@ -404,11 +424,11 @@ ip_frag_lookup(struct rte_ip_frag_tbl *tbl,
 					p2, i, assoc,
 			IPv6_KEY_BYTES(p2[i].key.src_dst), p2[i].key.id, p2[i].start);
 
-		if (ip_frag_key_cmp(key, &p2[i].key) == 0)
+		if (ip_frag_key_cmp(key, &p2[i].key) == 0)//判断是否相等
 			return p2 + i;
-		else if (ip_frag_key_is_empty(&p2[i].key))
+		else if (ip_frag_key_is_empty(&p2[i].key))//判断是否为空
 			empty = (empty == NULL) ?( p2 + i) : empty;
-		else if (max_cycles + p2[i].start < tms)
+		else if (max_cycles + p2[i].start < tms)//判断是否超时
 			old = (old == NULL) ? (p2 + i) : old;
 	}
 
