@@ -1,0 +1,19 @@
+1 创建acl上下文 
+rte_acl_create
+
+2 添加规则到acl上下文中 
+rte_acl_add_rules 
+重要结构体是
+
+3 规则的构造,定义匹配区域,rte_acl_field_def, 
+ACL规则主要面向的是IP流量中的五元组信息，即IP/PORT/PROTO，算法在这个基础上进行了抽象，提供了三种类型的匹配区域： 
+RTE_ACL_FIELD_TYPE_BITMASK：单字节区域如ip头部一个字节的proto字段； 
+RTE_ACL_FIELD_TYPE_MASK：采用MASK方式描述，一般对应4字节的源/目的地址； 
+RTE_ACL_FIELD_TYPE_RANGE：一般对应TCP或UDP头部2字节的PORT区域。 
+具体来说，rte_acl_field_def有5个成员：type、size、field_index、input_index、offset。
+
+4.针对所有规则创建相应的结构体用于过滤rte_acl_build
+
+5 调用rte_acl_classify函数进行分流和过滤
+
+6 销毁acl资源

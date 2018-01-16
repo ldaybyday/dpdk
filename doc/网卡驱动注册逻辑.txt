@@ -1,0 +1,279 @@
+1.程序执行main函数以前，会通过gcc的constructor属性，得到dpdk拥有的rte_driver信息,保存到dev_driver_list中。
+	PMD_REGISTER_DRIVER ---> rte_eal_driver_register[tal_common_dev.c] ----> TAILQ_INSERT_TAIL(&dev_driver_list, driver, next)
+	
+	
+	struct rte_driver 
+	{
+		TAILQ_ENTRY(rte_driver) next;  /**< Next in list. */
+		enum pmd_type type;		   /**< PMD Driver type */
+		const char *name;                   /**< Driver name. */
+		rte_dev_init_t *init;              /**< Device init. function. */
+		rte_dev_uninit_t *uninit;          /**< Device uninit. function. */
+	};
+	
+	/**
+	 * Driver type enumeration
+	 */
+	enum pmd_type {
+		PMD_VDEV = 0,
+		PMD_PDEV = 1,
+	};
+	
+2.得到所有pci设备，将其保存到结构体rte_pci_device中，并将其加入到pci_device_list中
+	rte_eal_init[eal.c] ------> rte_eal_pci_init[eal_pci.c] ------> rte_eal_pci_scan[eal_pci.c] 
+		 ----> pci_scan_one[eal_pci.c]  ----> TAILQ_INSERT_TAIL(&pci_device_list, dev, next)[eal_pci.c]
+	
+	注：通过读取文件/sys/bus/pci/devices下的信息来得到pci设备的信息，其下文件夹命名格式如：0000:00:15.6
+		其中domain为0000，bus为00,devid为15,function为6；其中最主要是得到网卡的驱动文件夹名称，目前dpdk
+		支持三类驱动，名称为vfio-pci\igb_uio\uio_pci_generic，我们经常使用的是igb_uio驱动。
+		通过这个名称可以得到支持dpdk的网卡，最终可以确认网卡个数（rte_eth_dev_count）。
+		
+	struct rte_pci_device 
+	{
+		TAILQ_ENTRY(rte_pci_device) next;       /**< Next probed PCI device. */
+		struct rte_pci_addr addr;               /**< PCI location. */
+		struct rte_pci_id id;                   /**< PCI ID. */
+		struct rte_pci_resource mem_resource[PCI_MAX_RESOURCE];   /**< PCI Memory Resource */
+		struct rte_intr_handle intr_handle;     /**< Interrupt handle */
+		struct rte_pci_driver *driver;          /**< Associated driver */
+		uint16_t max_vfs;                       /**< sriov enable if not zero */
+		int numa_node;                          /**< NUMA node connection */
+		struct rte_devargs *devargs;            /**< Device user arguments */
+		enum rte_kernel_driver kdrv;            /**< Kernel driver passthrough */
+	};
+	
+3.通过得到的dev_driver_list，遍历dev_driver_list，调用每个driver的初始化函数，将驱动注册到pci_driver_list中，元素结构体为rte_pci_driver。
+	rte_eal_init[eal.c] ------> rte_eal_dev_init[eal.c]  -----> 遍历dev_driver_list列表，调用每个driver的init（driver->init(......)）
+		rte_eth_driver_register[eal_commmon_pci.c](注册设备初始化函数和卸载函数	rte_eth_dev_init与rte_eth_dev_uninit)
+		-----> rte_eal_pci_register[eal_commmon_pci.c] ----> TAILQ_INSERT_TAIL(&pci_driver_list, driver, next)
+	
+	驱动中注册struct eth_driver结构，在调用每个网卡类型的init函数时，会将其传递给rte_eth_driver_register。
+	
+	struct eth_driver 
+	{
+		struct rte_pci_driver pci_drv;    /**< The PMD is also a PCI driver. */
+		eth_dev_init_t eth_dev_init;      /**< Device init function. */  //在每个驱动中
+		eth_dev_uninit_t eth_dev_uninit;  /**< Device uninit function. */ //在每个驱动中
+		unsigned int dev_private_size;    /**< Size of device private data. */
+	};
+
+	struct rte_pci_driver 
+	{
+		TAILQ_ENTRY(rte_pci_driver) next;       /**< Next in list. */
+		const char *name;                       /**< Driver name. */
+		pci_devinit_t *devinit;                 /**< Device init. function. */ //都注册为rte_eth_dev_init，在文件rte_ethdev.c
+		pci_devuninit_t *devuninit;             /**< Device uninit function. */ //都注册为rte_eth_dev_uninit，在文件rte_ethdev.c
+		const struct rte_pci_id *id_table;	/**< ID table, NULL terminated. */
+		uint32_t drv_flags;                     /**< Flags contolling handling of device. */
+	};
+	
+4.	rte_eal_init[eal.c] ------> rte_eal_pci_probe[eal_commmon_pci.c] ----> 遍历pci_device_list，循环调用pci_probe_all_drivers[eal_commmon_pci.c]
+		-----> 遍历pci_driver_list，循环调用rte_eal_pci_probe_one_driver[eal_commmon_pci.c] ----> 循环查找驱动列表，找到对应PCI设备的驱动
+		通过比较4个参数来确认匹配(vendor_id、device_id、subsystem_vendor_id、subsystem_device_id)，并判断驱动名称是否和dpdk自己实现的驱动名称相同 
+		----> 调用devinit函数进行初始化为rte_eth_dev_init[rte_ethdev.c] ----->其中会调用驱动eth_driver的eth_dev_init函数，此函数在驱动文件中
+		
+	
+
+
+注：驱动对外提供的操作函数结构体，保存在struct rte_eth_dev结构体中，下面是结构体的具体格式：
+
+	/**
+	 * @internal
+	 * The generic data structure associated with each ethernet device.
+	 *
+	 * Pointers to burst-oriented packet receive and transmit functions are
+	 * located at the beginning of the structure, along with the pointer to
+	 * where all the data elements for the particular device are stored in shared
+	 * memory. This split allows the function pointer and driver data to be per-
+	 * process, while the actual configuration data for the device is shared.
+	 */
+	struct rte_eth_dev {
+		eth_rx_burst_t rx_pkt_burst; /**< Pointer to PMD receive function. */
+		eth_tx_burst_t tx_pkt_burst; /**< Pointer to PMD transmit function. */
+		struct rte_eth_dev_data *data;  /**< Pointer to device data */
+		const struct eth_driver *driver;/**< Driver for this device */
+		const struct eth_dev_ops *dev_ops; /**< Functions exported by PMD */
+		struct rte_pci_device *pci_dev; /**< PCI info. supplied by probing */
+		/** User application callbacks for NIC interrupts */
+		struct rte_eth_dev_cb_list link_intr_cbs;
+		/**
+		 * User-supplied functions called from rx_burst to post-process
+		 * received packets before passing them to the user
+		 */
+		struct rte_eth_rxtx_callback *post_rx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
+		/**
+		 * User-supplied functions called from tx_burst to pre-process
+		 * received packets before passing them to the driver for transmission.
+		 */
+		struct rte_eth_rxtx_callback *pre_tx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
+		uint8_t attached; /**< Flag indicating the port is attached */
+		enum rte_eth_dev_type dev_type; /**< Flag indicating the device type */
+	};
+
+	/**
+	* @internal A structure containing the functions exported by an Ethernet driver.
+	*/
+	struct eth_dev_ops 
+	{
+		eth_dev_configure_t        dev_configure; /**< Configure device. */
+		eth_dev_start_t            dev_start;     /**< Start device. */
+		eth_dev_stop_t             dev_stop;      /**< Stop device. */
+		eth_dev_set_link_up_t      dev_set_link_up;   /**< Device link up. */
+		eth_dev_set_link_down_t    dev_set_link_down; /**< Device link down. */
+		eth_dev_close_t            dev_close;     /**< Close device. */
+		eth_promiscuous_enable_t   promiscuous_enable; /**< Promiscuous ON. */
+		eth_promiscuous_disable_t  promiscuous_disable;/**< Promiscuous OFF. */
+		eth_allmulticast_enable_t  allmulticast_enable;/**< RX multicast ON. */
+		eth_allmulticast_disable_t allmulticast_disable;/**< RX multicast OF. */
+		eth_link_update_t          link_update;   /**< Get device link state. */
+		eth_stats_get_t            stats_get;     /**< Get generic device statistics. */
+		eth_stats_reset_t          stats_reset;   /**< Reset generic device statistics. */
+		eth_xstats_get_t           xstats_get;    /**< Get extended device statistics. */
+		eth_xstats_reset_t         xstats_reset;  /**< Reset extended device statistics. */
+		eth_queue_stats_mapping_set_t queue_stats_mapping_set;
+		/**< Configure per queue stat counter mapping. */
+		eth_dev_infos_get_t        dev_infos_get; /**< Get device info. */
+		eth_dev_supported_ptypes_get_t dev_supported_ptypes_get;
+		/**< Get packet types supported and identified by device*/
+		mtu_set_t                  mtu_set; /**< Set MTU. */
+		vlan_filter_set_t          vlan_filter_set;  /**< Filter VLAN Setup. */
+		vlan_tpid_set_t            vlan_tpid_set;      /**< Outer VLAN TPID Setup. */
+		vlan_strip_queue_set_t     vlan_strip_queue_set; /**< VLAN Stripping on queue. */
+		vlan_offload_set_t         vlan_offload_set; /**< Set VLAN Offload. */
+		vlan_pvid_set_t            vlan_pvid_set; /**< Set port based TX VLAN insertion */
+		eth_queue_start_t          rx_queue_start;/**< Start RX for a queue.*/
+		eth_queue_stop_t           rx_queue_stop;/**< Stop RX for a queue.*/
+		eth_queue_start_t          tx_queue_start;/**< Start TX for a queue.*/
+		eth_queue_stop_t           tx_queue_stop;/**< Stop TX for a queue.*/
+		eth_rx_queue_setup_t       rx_queue_setup;/**< Set up device RX queue.*/
+		eth_queue_release_t        rx_queue_release;/**< Release RX queue.*/
+		eth_rx_queue_count_t       rx_queue_count; /**< Get Rx queue count. */
+		eth_rx_descriptor_done_t   rx_descriptor_done;  /**< Check rxd DD bit */
+		/**< Enable Rx queue interrupt. */
+		eth_rx_enable_intr_t       rx_queue_intr_enable;
+		/**< Disable Rx queue interrupt.*/
+		eth_rx_disable_intr_t      rx_queue_intr_disable;
+		eth_tx_queue_setup_t       tx_queue_setup;/**< Set up device TX queue.*/
+		eth_queue_release_t        tx_queue_release;/**< Release TX queue.*/
+		eth_dev_led_on_t           dev_led_on;    /**< Turn on LED. */
+		eth_dev_led_off_t          dev_led_off;   /**< Turn off LED. */
+		flow_ctrl_get_t            flow_ctrl_get; /**< Get flow control. */
+		flow_ctrl_set_t            flow_ctrl_set; /**< Setup flow control. */
+		priority_flow_ctrl_set_t   priority_flow_ctrl_set; /**< Setup priority flow control.*/
+		eth_mac_addr_remove_t      mac_addr_remove; /**< Remove MAC address */
+		eth_mac_addr_add_t         mac_addr_add;  /**< Add a MAC address */
+		eth_mac_addr_set_t         mac_addr_set;  /**< Set a MAC address */
+		eth_uc_hash_table_set_t    uc_hash_table_set;  /**< Set Unicast Table Array */
+		eth_uc_all_hash_table_set_t uc_all_hash_table_set;  /**< Set Unicast hash bitmap */
+		eth_mirror_rule_set_t	   mirror_rule_set;  /**< Add a traffic mirror rule.*/
+		eth_mirror_rule_reset_t	   mirror_rule_reset;  /**< reset a traffic mirror rule.*/
+		eth_set_vf_rx_mode_t       set_vf_rx_mode;   /**< Set VF RX mode */
+		eth_set_vf_rx_t            set_vf_rx;  /**< enable/disable a VF receive */
+		eth_set_vf_tx_t            set_vf_tx;  /**< enable/disable a VF transmit */
+		eth_set_vf_vlan_filter_t   set_vf_vlan_filter;  /**< Set VF VLAN filter */
+		/** Add UDP tunnel port. */
+		eth_udp_tunnel_port_add_t udp_tunnel_port_add;
+		/** Del UDP tunnel port. */
+		eth_udp_tunnel_port_del_t udp_tunnel_port_del;
+		eth_set_queue_rate_limit_t set_queue_rate_limit;   /**< Set queue rate limit */
+		eth_set_vf_rate_limit_t    set_vf_rate_limit;   /**< Set VF rate limit */
+		/** Update redirection table. */
+		reta_update_t reta_update;
+		/** Query redirection table. */
+		reta_query_t reta_query;
+
+		eth_get_reg_length_t get_reg_length;
+		/**< Get # of registers */
+		eth_get_reg_t get_reg;
+		/**< Get registers */
+		eth_get_eeprom_length_t get_eeprom_length;
+		/**< Get eeprom length */
+		eth_get_eeprom_t get_eeprom;
+		/**< Get eeprom data */
+		eth_set_eeprom_t set_eeprom;
+		/**< Set eeprom */
+	  /* bypass control */
+	#ifdef RTE_NIC_BYPASS
+	  bypass_init_t bypass_init;
+	  bypass_state_set_t bypass_state_set;
+	  bypass_state_show_t bypass_state_show;
+	  bypass_event_set_t bypass_event_set;
+	  bypass_event_show_t bypass_event_show;
+	  bypass_wd_timeout_set_t bypass_wd_timeout_set;
+	  bypass_wd_timeout_show_t bypass_wd_timeout_show;
+	  bypass_ver_show_t bypass_ver_show;
+	  bypass_wd_reset_t bypass_wd_reset;
+	#endif
+
+		/** Configure RSS hash protocols. */
+		rss_hash_update_t rss_hash_update;
+		/** Get current RSS hash configuration. */
+		rss_hash_conf_get_t rss_hash_conf_get;
+		eth_filter_ctrl_t              filter_ctrl;
+		/**< common filter control. */
+		eth_set_mc_addr_list_t set_mc_addr_list; /**< set list of mcast addrs */
+		eth_rxq_info_get_t rxq_info_get;
+		/**< retrieve RX queue information. */
+		eth_txq_info_get_t txq_info_get;
+		/**< retrieve TX queue information. */
+		/** Turn IEEE1588/802.1AS timestamping on. */
+		eth_timesync_enable_t timesync_enable;
+		/** Turn IEEE1588/802.1AS timestamping off. */
+		eth_timesync_disable_t timesync_disable;
+		/** Read the IEEE1588/802.1AS RX timestamp. */
+		eth_timesync_read_rx_timestamp_t timesync_read_rx_timestamp;
+		/** Read the IEEE1588/802.1AS TX timestamp. */
+		eth_timesync_read_tx_timestamp_t timesync_read_tx_timestamp;
+
+		/** Get DCB information */
+		eth_get_dcb_info get_dcb_info;
+		/** Adjust the device clock.*/
+		eth_timesync_adjust_time timesync_adjust_time;
+		/** Get the device clock time. */
+		eth_timesync_read_time timesync_read_time;
+		/** Set the device clock time. */
+		eth_timesync_write_time timesync_write_time;
+		/** Config ether type of l2 tunnel */
+		eth_l2_tunnel_eth_type_conf_t l2_tunnel_eth_type_conf;
+		/** Enable/disable l2 tunnel offload functions */
+		eth_l2_tunnel_offload_set_t l2_tunnel_offload_set;
+	};
+
+	/**
+	 * @internal
+	 * The generic data structure associated with each ethernet device.
+	 *
+	 * Pointers to burst-oriented packet receive and transmit functions are
+	 * located at the beginning of the structure, along with the pointer to
+	 * where all the data elements for the particular device are stored in shared
+	 * memory. This split allows the function pointer and driver data to be per-
+	 * process, while the actual configuration data for the device is shared.
+	 */
+	struct rte_eth_dev 
+	{
+		eth_rx_burst_t rx_pkt_burst; /**< Pointer to PMD receive function. */
+		eth_tx_burst_t tx_pkt_burst; /**< Pointer to PMD transmit function. */
+		struct rte_eth_dev_data *data;  /**< Pointer to device data */
+		const struct eth_driver *driver;/**< Driver for this device */
+		const struct eth_dev_ops *dev_ops; /**< Functions exported by PMD */
+		struct rte_pci_device *pci_dev; /**< PCI info. supplied by probing */
+		/** User application callbacks for NIC interrupts */
+		struct rte_eth_dev_cb_list link_intr_cbs;
+		/**
+		 * User-supplied functions called from rx_burst to post-process
+		 * received packets before passing them to the user
+		 */
+		struct rte_eth_rxtx_callback *post_rx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
+		/**
+		 * User-supplied functions called from tx_burst to pre-process
+		 * received packets before passing them to the driver for transmission.
+		 */
+		struct rte_eth_rxtx_callback *pre_tx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
+		uint8_t attached; /**< Flag indicating the port is attached */
+		enum rte_eth_dev_type dev_type; /**< Flag indicating the device type */
+	};
+		
+		
+		
+		
+		

@@ -1,0 +1,148 @@
+一. 安装pcap
+1.http://www.tcpdump.org/#latest-release下载libpcap
+2.sudo apt-get install flex
+3.sudo apt-get install bison
+4.sudo apt-get install libpcap-dev
+5.tar -zxv -f 下载的.gz文件
+6.cd到相应目录下，./configure; make; sudo make install
+
+二. 编译DPDK:
+DPDK默认是编译成静态库的，改成动态库只需要把config/common_linuxapp文件中CONFIG_RTE_BUILD_SHARED_LIB=n修改成CONFIG_RTE_BUILD_SHARED_LIB=y就行了
+
+make config T=i686-native-linuxapp-gcc DESTDIR=/usr/local/dpdk
+make config T=x86_64-native-linuxapp-gcc DESTDIR=/usr/local/dpdk
+sed -ri 's,(PMD_PCAP=).*,\1y,' build/.config
+make
+make install T=i686-native-linuxapp-gcc DESTDIR=/usr/local/dpdk
+make install T=x86_64-native-linuxapp-gcc DESTDIR=/usr/local/dpdk
+
+三. 设置hugepages在系统运行的情况，通过修改/proc中参数分配:
+
+// 分配24个2MB的页
+echo 24 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+
+在系统运行时，直接mount挂载hugepages:
+
+mkdir /mnt/huge
+mount -t hugetlbfs nodev /mnt/huge
+
+四. 加载内核模块
+dpdk依赖uio, 提供了igb_uio.ko, 需要将这两个内核模块加载:
+
+modprobe uio
+cd /usr/local/dpdk/i686-native-linuxapp-gcc
+insmod kmod/igb_uio.ko
+
+五. 绑定网卡到dpdk
+
+在dpdk/tools/下有个python的应用dpdk_nic_bind.py可以用来绑定网卡;
+
+下查看网卡的信息：
+
+#./tools/dpdk_nic_bind.py --status 
+Network devices using DPDK-compatible driver
+============================================
+<none>
+Network devices using kernel driver
+===================================
+0000:02:00.0 'NetXtreme BCM5720 Gigabit Ethernet PCIe' if=eth0 drv=tg3 unused=igb_uio *Active*
+0000:02:00.1 'NetXtreme BCM5720 Gigabit Ethernet PCIe' if=eth1 drv=tg3 unused=igb_uio *Active*
+0000:08:00.0 'Ethernet 10G 2P X520 Adapter' if=eth2 drv=ixgbe unused=igb_uio *Active*
+0000:08:00.1 'Ethernet 10G 2P X520 Adapter' if=eth3 drv=ixgbe unused=igb_uio *Active*
+Other network devices
+=====================
+<none>
+
+下面我们将红色的 eht2 和 eth3 绑定到 igb_uio 模块，首先是 将这两个网卡非使用:
+
+#sudo ifconfig eth2 down
+#sudo ifconfig  eth3 down
+然后进行绑定：
+
+# sudo ./tools/dpdk_nic_bind.py --bind=igb_uio 0000:02:01.0
+# sudo ./tools/dpdk_nic_bind.py --bind=igb_uio 0000:02:06.0
+再查看一下：
+
+# ./tools/dpdk_nic_bind.py --status
+============================================
+0000:08:00.0 'Ethernet 10G 2P X520 Adapter' drv=igb_uio unused=
+0000:08:00.1 'Ethernet 10G 2P X520 Adapter' drv=igb_uio unused=
+
+
+Network devices using kernel driver
+===================================
+0000:02:00.0 'NetXtreme BCM5720 Gigabit Ethernet PCIe' if=eth0 drv=tg3 unused=igb_uio *Active*
+0000:02:00.1 'NetXtreme BCM5720 Gigabit Ethernet PCIe' if=eth1 drv=tg3 unused=igb_uio *Active*
+
+
+Other network devices
+=====================
+<none>
+
+发现之前的 eth2,eth3 已经绑定到 igb_uio 
+
+3. 下面编译example下的helloworld测试用例
+
+dpdk/examples/helloworld$ make RTE_SDK=/usr/local/dpdk RTE_TARGET=i686-native-linuxapp-gcc
+
+export RTE_SDK=/usr/local/dpdk
+export RTE_TARGET=i686-native-linuxapp-gcc
+export EXTRA_CFLAGS="-O0 -g"
+dpdk/examples/helloworld$ make
+root@bogon:~/dpdk# ./examples/helloworld/build/helloworld -c 0xf -n 2//-c cpu核心数 0xf(1111)
+
+./l2fwd -c f -n 2 -- -q 1 -p 0x3
+
+编译 test_pmd
+make RTE_SDK=/usr/local/dpdk RTE_TARGET=i686-native-linuxapp-gcc -C test-pmd/
+testpmd -c f -n 2  -- -i
+
+DPDK收发包接口：
+1. 收包 rte_eth_rx_burst	默认每次处理32个包	收包队列长度经验值128，针对大量的数据包处理可调整，如512，1024
+   发包 rte_eth_tx_burst	默认每次处理32个包	发包队列长度经验值512，针对大量的数据包处理可调整，如1024
+
+   flowgen.c	177		pkt_burst_flow_gen()
+				104		ip_sum()
+   txonly.c		136		setup_pkt_udp_ip_headers()
+   
+   
+   
+   
+   
+1.rte_eal_init函数常用命令行参数说明：
+	b：黑列表
+	w：白列表
+	c：处理器核掩码
+	l：处理器核列表
+	m：存储大小
+	n：通道个数
+	r：队列个数
+	v：版本号
+	p: 要使用的端口的掩码
+	q: 每个线程能处理的端口个数
+	
+1）int rte_eal_remote_launch(int (*f)(void *), void *arg, unsigned slave_d);
+	第一个参数为从线程，被征召的线程。
+	第二个参数为传递给从线程的参数。
+	第三个参数为从线程在哪个逻辑核运行。
+	
+
+*获取时间函数： rte_rdtsc  待测试
+
+
+dpdk优化的文章：
+	http://blog.sina.com.cn/s/blog_4ddef8f80102we5k.html
+
+1.查看网卡的队列个数
+	cat /proc/interrupts | grep eth4
+2.查看内存的Channel个数
+	dmidecode -t memory | grep Locator
+	http://m.blog.csdn.net/article/details?id=51508195
+
+./mp_server -c3 -n1 -- -p0x3 -n1
+./mp_client -c2 -n1 --proc-type=auto
+dpdk解决提示大页不足问题： echo 0 > /proc/sys/kernel/randomize_va_space
+查看线程状态：ps H -eo user,pid,ppid,tid,time,psr,%cpu,cmd
+
+1314342
+
